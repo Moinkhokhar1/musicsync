@@ -13,10 +13,12 @@ function App() {
   const [mode, setMode] = useState("join");
   const [fileUrl, setFileUrl] = useState("");
 
-  useEffect(() => {
-    socketRef.current = io(SERVER, { autoConnect: false });
-    const s = socketRef.current;
-
+useEffect(() => {
+    socketRef.current = io(SERVER, {
+      autoConnect: false,
+      transports: ["websocket"], 
+    });
+  
     s.on("connect", () => setConnected(true));
     s.on("disconnect", () => setConnected(false));
 
