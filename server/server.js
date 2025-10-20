@@ -13,17 +13,26 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Serve uploaded files
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// Multer setup for file uploads
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/"),
-  filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
+  destination: (req, file, cb) => cb(null, path.join(__dirname, "uploads")),
+  filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
 });
 const upload = multer({ storage });
 
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// Upload endpoint
+app.post("/upload", upload.single("music"), (req, res) => {
+  if (!req.file) return res.status(400).send("No file uploaded.");
+  res.json({ success: true, fileUrl: `/uploads/${req.file.filename}` });
+});
 
+// HTTP server + Socket.IO
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
+  cors: { origin: "*" }
 });
 
 const rooms = new Map();
@@ -31,46 +40,21 @@ const rooms = new Map();
 io.on("connection", (socket) => {
   console.log("✅ New connection:", socket.id);
 
-  socket.on("create-room", ({ roomId, userId }) => {
-    if (rooms.has(roomId)) {
-      socket.emit("room-error", { message: "Room already exists!" });
-      return;
-    }
-
-    rooms.set(roomId, {
-      hostSocketId: socket.id,
-      currentFile: null,
-      state: {
-        isPlaying: false,
-        playbackTime: 0,
-        playbackRate: 1,
-        updatedAt: Date.now(),
-      },
-    });
-
-    socket.join(roomId);
-    socket.emit("room-created", { roomId });
-    console.log(`🏠 Room created: ${roomId}`);
-  });
-
   socket.on("join-room", ({ roomId, userId, role }) => {
-    if (!rooms.has(roomId)) {
-      socket.emit("room-error", { message: "Room not found!" });
-      return;
-    }
-
     socket.join(roomId);
     console.log(`🟢 ${userId} joined ${roomId} as ${role}`);
 
-    const r = rooms.get(roomId);
-    if (role === "host") r.hostSocketId = socket.id;
+    if (!rooms.has(roomId)) {
+      rooms.set(roomId, {
+        hostSocketId: role === "host" ? socket.id : null,
+        state: { isPlaying: false, playbackTime: 0 }
+      });
+    } else if (role === "host") {
+      rooms.get(roomId).hostSocketId = socket.id;
+    }
 
-    const state = r.state;
-    socket.emit("resync", {
-      playbackTime: state.playbackTime,
-      isPlaying: state.isPlaying,
-      fileUrl: r.currentFile,
-    });
+    const state = rooms.get(roomId).state;
+    socket.emit("resync", { playbackTime: state.playbackTime, isPlaying: state.isPlaying });
 
     io.to(roomId).emit("room-joined", { roomId, userId });
   });
@@ -78,43 +62,28 @@ io.on("connection", (socket) => {
   socket.on("host-play", ({ roomId, playbackTime }) => {
     const r = rooms.get(roomId);
     if (!r) return;
-    r.state = { ...r.state, isPlaying: true, playbackTime };
+    r.state.isPlaying = true;
+    r.state.playbackTime = playbackTime;
     io.to(roomId).emit("sync-play", { playbackTime });
   });
 
   socket.on("host-pause", ({ roomId, playbackTime }) => {
     const r = rooms.get(roomId);
     if (!r) return;
-    r.state = { ...r.state, isPlaying: false, playbackTime };
+    r.state.isPlaying = false;
+    r.state.playbackTime = playbackTime;
     io.to(roomId).emit("sync-pause", { playbackTime });
   });
 
   socket.on("host-seek", ({ roomId, playbackTime }) => {
     const r = rooms.get(roomId);
     if (!r) return;
-    r.state = { ...r.state, playbackTime };
+    r.state.playbackTime = playbackTime;
     io.to(roomId).emit("sync-seek", { playbackTime });
   });
-});
 
-app.post("/upload", upload.single("audio"), (req, res) => {
-  const filePath = `/uploads/${req.file.filename}`;
-  console.log("🎵 Uploaded file:", filePath);
-  res.json({ fileUrl: filePath });
+  socket.on("disconnect", () => console.log("❌ Disconnected:", socket.id));
 });
-
-// 🔹 Socket event for file share
-app.post("/notify-file", (req, res) => {
-  const { roomId, fileUrl } = req.body;
-  const r = rooms.get(roomId);
-  if (r) {
-    r.currentFile = fileUrl;
-    io.to(roomId).emit("file-shared", { fileUrl });
-  }
-  res.sendStatus(200);
-});
-
-app.get("/", (req, res) => res.send("🎶 MusicSync Server Running!"));
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
