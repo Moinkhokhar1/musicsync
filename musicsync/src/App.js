@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import io from "socket.io-client";
 
-const SERVER = "http://localhost:4000";
+const SERVER = "https://musicsync-5.onrender.com";
 
 function App() {
   const audioRef = useRef();
