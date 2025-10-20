@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import io from "socket.io-client";
+import { io } from "socket.io-client";
 
 const SERVER = "https://musicsync-5.onrender.com";
 
@@ -13,27 +13,25 @@ function App() {
   const [mode, setMode] = useState("join");
   const [fileUrl, setFileUrl] = useState("");
 
-useEffect(() => {
-    socketRef.current = io(SERVER, {
+  useEffect(() => {
+    const s = io(SERVER, {
       autoConnect: false,
-      transports: ["websocket"], 
+      transports: ["websocket"],
     });
-  
+    socketRef.current = s;
+
     s.on("connect", () => setConnected(true));
     s.on("disconnect", () => setConnected(false));
 
     s.on("room-created", ({ roomId }) => {
       setMessage(`✅ Room ${roomId} created successfully!`);
+      setRole("host");
     });
 
-    s.on("room-error", ({ message }) => {
-      setMessage(`❌ ${message}`);
-    });
+    s.on("room-error", ({ message }) => setMessage(`❌ ${message}`));
 
     s.on("resync", ({ playbackTime, isPlaying, fileUrl }) => {
-      if (fileUrl) {
-        setFileUrl(SERVER + fileUrl);
-      }
+      if (fileUrl) setFileUrl(SERVER + fileUrl);
       const audio = audioRef.current;
       if (!audio) return;
       audio.currentTime = playbackTime;
@@ -44,25 +42,30 @@ useEffect(() => {
       const fullUrl = SERVER + fileUrl;
       setFileUrl(fullUrl);
       const audio = audioRef.current;
-      audio.src = fullUrl;
-      audio.load();
+      if (audio) {
+        audio.src = fullUrl;
+        audio.load();
+      }
       setMessage("🎵 New track loaded!");
     });
 
     s.on("sync-play", ({ playbackTime }) => {
       const audio = audioRef.current;
+      if (!audio) return;
       audio.currentTime = playbackTime;
       audio.play().catch(() => {});
     });
 
     s.on("sync-pause", ({ playbackTime }) => {
       const audio = audioRef.current;
+      if (!audio) return;
       audio.currentTime = playbackTime;
       audio.pause();
     });
 
     s.on("sync-seek", ({ playbackTime }) => {
       const audio = audioRef.current;
+      if (!audio) return;
       audio.currentTime = playbackTime;
     });
 
@@ -75,13 +78,14 @@ useEffect(() => {
   };
 
   const handleCreateRoom = () => {
+    if (!roomId) return alert("Enter a Room ID");
     connectSocket();
     const userId = "host" + Math.floor(Math.random() * 1000);
     socketRef.current.emit("create-room", { roomId, userId });
-    setRole("host");
   };
 
   const handleJoinRoom = () => {
+    if (!roomId) return alert("Enter a Room ID");
     connectSocket();
     const userId = "guest" + Math.floor(Math.random() * 1000);
     socketRef.current.emit("join-room", { roomId, userId, role });
@@ -92,45 +96,45 @@ useEffect(() => {
     if (!file) return;
 
     const formData = new FormData();
-    formData.append("audio", file);
+    formData.append("music", file);
 
-    const uploadRes = await fetch(`${SERVER}/upload`, {
-      method: "POST",
-      body: formData,
-    });
-    const { fileUrl } = await uploadRes.json();
+    try {
+      const uploadRes = await fetch(`${SERVER}/upload`, {
+        method: "POST",
+        body: formData,
+      });
 
-    // Notify others in the room
-    await fetch(`${SERVER}/notify-file`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomId, fileUrl }),
-    });
+      const { fileUrl } = await uploadRes.json();
+      const fullUrl = SERVER + fileUrl;
 
-    setFileUrl(SERVER + fileUrl);
-    setMessage("🎵 File uploaded and shared!");
+      setFileUrl(fullUrl);
+      setMessage("🎵 File uploaded and shared!");
+
+      // Broadcast to everyone in the room via Socket.IO
+      socketRef.current.emit("share-file", { roomId, fileUrl });
+    } catch (err) {
+      console.error("Upload failed", err);
+      setMessage("❌ Upload failed");
+    }
   };
 
   const hostPlay = async () => {
     const audio = audioRef.current;
+    if (!audio) return;
     await audio.play();
-    socketRef.current.emit("host-play", {
-      roomId,
-      playbackTime: audio.currentTime,
-    });
+    socketRef.current.emit("host-play", { roomId, playbackTime: audio.currentTime });
   };
 
   const hostPause = () => {
     const audio = audioRef.current;
+    if (!audio) return;
     audio.pause();
-    socketRef.current.emit("host-pause", {
-      roomId,
-      playbackTime: audio.currentTime,
-    });
+    socketRef.current.emit("host-pause", { roomId, playbackTime: audio.currentTime });
   };
 
   const hostSeek = (t) => {
     const audio = audioRef.current;
+    if (!audio) return;
     audio.currentTime = t;
     socketRef.current.emit("host-seek", { roomId, playbackTime: t });
   };
@@ -141,22 +145,11 @@ useEffect(() => {
 
       <div>
         <label>
-          <input
-            type="radio"
-            value="create"
-            checked={mode === "create"}
-            onChange={() => setMode("create")}
-          />
+          <input type="radio" value="create" checked={mode === "create"} onChange={() => setMode("create")} />
           Create Room
         </label>
-
         <label style={{ marginLeft: 10 }}>
-          <input
-            type="radio"
-            value="join"
-            checked={mode === "join"}
-            onChange={() => setMode("join")}
-          />
+          <input type="radio" value="join" checked={mode === "join"} onChange={() => setMode("join")} />
           Join Room
         </label>
       </div>
@@ -188,12 +181,7 @@ useEffect(() => {
         </div>
       )}
 
-      <audio
-        ref={audioRef}
-        src={fileUrl}
-        controls
-        style={{ width: "100%", marginTop: 20 }}
-      />
+      <audio ref={audioRef} src={fileUrl} controls style={{ width: "100%", marginTop: 20 }} />
 
       {role === "host" && (
         <div style={{ marginTop: 10 }}>
