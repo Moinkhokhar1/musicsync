@@ -2,81 +2,113 @@ import React, { useEffect, useRef, useState } from "react";
 import io from "socket.io-client";
 
 const SERVER = "http://localhost:4000";
-const AUDIO_URL =
-  "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
 
-  function App() {
+function App() {
   const audioRef = useRef();
   const socketRef = useRef();
-  const [roomId, setRoomId] = useState("room1");
+  const [roomId, setRoomId] = useState("");
   const [role, setRole] = useState("guest");
   const [connected, setConnected] = useState(false);
-  
-    useEffect(() => {
+  const [message, setMessage] = useState("");
+  const [mode, setMode] = useState("join");
+  const [fileUrl, setFileUrl] = useState("");
+
+  useEffect(() => {
     socketRef.current = io(SERVER, { autoConnect: false });
     const s = socketRef.current;
 
     s.on("connect", () => setConnected(true));
     s.on("disconnect", () => setConnected(false));
 
-    s.on("resync", ({ playbackTime, isPlaying }) => {
-      const audio = audioRef.current;
-      if (!audio) return;
-      if (Math.abs(audio.currentTime - playbackTime) > 0.3) {
-        audio.currentTime = playbackTime;
-      }
-      if (isPlaying) audio.play().catch(() => {});
-      else audio.pause();
+    s.on("room-created", ({ roomId }) => {
+      setMessage(`✅ Room ${roomId} created successfully!`);
     });
 
-        s.on("sync-play", ({ playbackTime }) => {
+    s.on("room-error", ({ message }) => {
+      setMessage(`❌ ${message}`);
+    });
+
+    s.on("resync", ({ playbackTime, isPlaying, fileUrl }) => {
+      if (fileUrl) {
+        setFileUrl(SERVER + fileUrl);
+      }
       const audio = audioRef.current;
       if (!audio) return;
+      audio.currentTime = playbackTime;
+      isPlaying ? audio.play().catch(() => {}) : audio.pause();
+    });
+
+    s.on("file-shared", ({ fileUrl }) => {
+      const fullUrl = SERVER + fileUrl;
+      setFileUrl(fullUrl);
+      const audio = audioRef.current;
+      audio.src = fullUrl;
+      audio.load();
+      setMessage("🎵 New track loaded!");
+    });
+
+    s.on("sync-play", ({ playbackTime }) => {
+      const audio = audioRef.current;
       audio.currentTime = playbackTime;
       audio.play().catch(() => {});
     });
 
     s.on("sync-pause", ({ playbackTime }) => {
       const audio = audioRef.current;
-      if (!audio) return;
       audio.currentTime = playbackTime;
       audio.pause();
     });
 
     s.on("sync-seek", ({ playbackTime }) => {
       const audio = audioRef.current;
-      if (!audio) return;
       audio.currentTime = playbackTime;
     });
 
     return () => s.disconnect();
   }, []);
 
-  // 🧠 Join Room
-const joinRoom = () => {
-  const s = socketRef.current;
+  const connectSocket = () => {
+    const s = socketRef.current;
+    if (!s.connected) s.connect();
+  };
 
-  if (!s) {
-    console.log("Socket not initialized yet");
-    return;
-  }
+  const handleCreateRoom = () => {
+    connectSocket();
+    const userId = "host" + Math.floor(Math.random() * 1000);
+    socketRef.current.emit("create-room", { roomId, userId });
+    setRole("host");
+  };
 
-  if (!roomId || !role) {
-    console.log("roomId or role missing");
-    return;
-  }
+  const handleJoinRoom = () => {
+    connectSocket();
+    const userId = "guest" + Math.floor(Math.random() * 1000);
+    socketRef.current.emit("join-room", { roomId, userId, role });
+  };
 
-  if (!s.connected) s.connect(); // connect only if not already
+  const handleUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-  const userId = "user" + Math.floor(Math.random() * 1000);
-  console.log("Joining room", { roomId, userId, role });
+    const formData = new FormData();
+    formData.append("audio", file);
 
-  s.emit("join-room", { roomId, userId, role });
-};
+    const uploadRes = await fetch(`${SERVER}/upload`, {
+      method: "POST",
+      body: formData,
+    });
+    const { fileUrl } = await uploadRes.json();
 
+    // Notify others in the room
+    await fetch(`${SERVER}/notify-file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomId, fileUrl }),
+    });
 
+    setFileUrl(SERVER + fileUrl);
+    setMessage("🎵 File uploaded and shared!");
+  };
 
-  // 🎵 Host Controls
   const hostPlay = async () => {
     const audio = audioRef.current;
     await audio.play();
@@ -101,52 +133,67 @@ const joinRoom = () => {
     socketRef.current.emit("host-seek", { roomId, playbackTime: t });
   };
 
-  // 🔁 Heartbeat (sync updates every 3s)
-  useEffect(() => {
-    if (role !== "host") return;
-    const interval = setInterval(() => {
-      const audio = audioRef.current;
-      if (audio && socketRef.current.connected) {
-        socketRef.current.emit("heartbeat", {
-          roomId,
-          playbackTime: audio.currentTime,
-        });
-      }
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [role, roomId]);
-
-   return (
-    <div style={{ padding: 20 }}>
+  return (
+    <div style={{ padding: 20, maxWidth: 600, margin: "auto", textAlign: "center" }}>
       <h2>🎶 MusicSync App</h2>
-          <div>
-        <input
-          value={roomId}
-          onChange={(e) => setRoomId(e.target.value)}
-          placeholder="Room ID"
-        />
 
-    <select value={role} onChange={(e) => setRole(e.target.value)}>
-          <option value="guest">Guest</option>
-          <option value="host">Host</option>
-        </select>
+      <div>
+        <label>
+          <input
+            type="radio"
+            value="create"
+            checked={mode === "create"}
+            onChange={() => setMode("create")}
+          />
+          Create Room
+        </label>
 
-        <button onClick={joinRoom} onTouchStart={joinRoom}>Join</button>
-
-
-        <span style={{ marginLeft: 10 }}>
-          {connected ? "✅ Connected" : "❌ Disconnected"}
-        </span>
+        <label style={{ marginLeft: 10 }}>
+          <input
+            type="radio"
+            value="join"
+            checked={mode === "join"}
+            onChange={() => setMode("join")}
+          />
+          Join Room
+        </label>
       </div>
 
-    <audio
+      <input
+        value={roomId}
+        onChange={(e) => setRoomId(e.target.value)}
+        placeholder="Enter Room ID"
+        style={{ marginTop: 10, padding: 6, width: "70%" }}
+      />
+
+      <div style={{ marginTop: 10 }}>
+        {mode === "create" ? (
+          <button onClick={handleCreateRoom}>Create Room</button>
+        ) : (
+          <button onClick={handleJoinRoom}>Join Room</button>
+        )}
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        {connected ? "✅ Connected to Server" : "❌ Not Connected"}
+      </div>
+
+      {message && <p style={{ color: "green", marginTop: 5 }}>{message}</p>}
+
+      {role === "host" && (
+        <div style={{ marginTop: 20 }}>
+          <input type="file" accept="audio/*" onChange={handleUpload} />
+        </div>
+      )}
+
+      <audio
         ref={audioRef}
-        src={AUDIO_URL}
+        src={fileUrl}
         controls
         style={{ width: "100%", marginTop: 20 }}
-    />
+      />
 
-    {role === "host" && (
+      {role === "host" && (
         <div style={{ marginTop: 10 }}>
           <button onClick={hostPlay}>Play</button>
           <button onClick={hostPause}>Pause</button>
@@ -157,4 +204,5 @@ const joinRoom = () => {
     </div>
   );
 }
+
 export default App;
