@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 
 const SERVER = "https://musicsync-5.onrender.com";
+const AUDIO_URL = "https://koshalworld.com/files/download/id/61733";
+const [fileUrl, setFileUrl] = useState(AUDIO_URL);
+
 
 function App() {
   const audioRef = useRef();
